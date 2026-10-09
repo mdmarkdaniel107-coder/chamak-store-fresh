@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#14532d"><title>CHAMAK STORE — দোকানের হিসাব</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar"><div><div class="brand">CHAMAK STORE</div><div class="subbrand">দোকানের হিসাব</div></div><div class="top-actions"><button id="refreshBtn" class="secondary">রিফ্রেশ</button><button id="logoutBtn" class="secondary" hidden>লগআউট</button></div></header>
+  <nav class="tabs" id="tabs">
+    <button data-page="dashboard" class="active">ড্যাশবোর্ড</button><button data-page="products">পণ্য</button><button data-page="purchase">ক্রয়</button><button data-page="sale">বিক্রয়</button><button data-page="parties">ক্রেতা/সরবরাহকারী</button><button data-page="money">নগদ/খরচ</button><button data-page="stock">স্টক ভেলু যাচাই</button><button data-page="history">লেনদেন</button>
+  </nav>
+  <main id="pageContent"><div class="loading">লোড হচ্ছে…</div></main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
