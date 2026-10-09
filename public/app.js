@@ -1,36 +1,950 @@
-const $ = (s, root=document) => root.querySelector(s);
-const $$ = (s, root=document) => [...root.querySelectorAll(s)];
-const state = { page:'dashboard', products:[], customers:[], suppliers:[], accounts:[], items:[], stock:[], tx:[] };
-const money = n => new Intl.NumberFormat('bn-BD',{style:'currency',currency:'BDT',maximumFractionDigits:2}).format((Number(n)||0)/100);
-const qty = n => (Number(n||0)/1000).toLocaleString('bn-BD',{maximumFractionDigits:3});
-const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const today = () => new Date().toISOString().slice(0,10);
-function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),3200)}
-async function api(path, options={}){const res=await fetch(path,{...options,headers:{'content-type':'application/json',...(options.headers||{})}});let data;try{data=await res.json()}catch{throw new Error('সার্ভার থেকে সঠিক উত্তর আসেনি।')}if(!res.ok||data.ok===false)throw new Error(data.error||'কাজটি সম্পন্ন হয়নি।');return data}
-function post(path,data){return api(path,{method:'POST',body:JSON.stringify({...data,idempotency_key:crypto.randomUUID()})})}
-function header(title,sub=''){return `<div class="pagehead"><div><h1>${title}</h1><div class="muted">${sub}</div></div></div>`}
-function field(label,name,type='text',value='',opts=''){return `<div class="field"><label for="${name}">${label}</label>${type==='select'?`<select id="${name}" name="${name}">${opts}</select>`:`<input id="${name}" name="${name}" type="${type}" value="${esc(value)}" ${type==='number'?'step="any"':''}>`}</div>`}
-function productOptions(){return `<option value="">পণ্য বাছাই করুন</option>`+state.products.map(p=>`<option value="${p.id}" data-price="${p.sale_price_paisa/100}" data-cost="${p.purchase_price_paisa/100}" data-stock="${p.current_stock_milli/1000}">${esc(p.name)} — স্টক ${qty(p.current_stock_milli)} ${esc(p.unit)}</option>`).join('')}
-function partyOptions(list,label){return `<option value="">${label} (ঐচ্ছিক)</option>`+list.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}
-async function loadBase(){const [p,c,s,a]=await Promise.all([api('/api/products'),api('/api/customers'),api('/api/suppliers'),api('/api/accounts')]);state.products=p.items;state.customers=c.items;state.suppliers=s.items;state.accounts=a.items;}
-async function render(){const root=$('#pageContent');root.innerHTML='<div class="loading">তথ্য লোড হচ্ছে…</div>';try{const session=await api('/api/session');$('#logoutBtn').hidden=!session.authenticated;if(!session.authenticated){renderLogin(root,session);return;}await loadBase();if(state.page==='dashboard')await dashboard(root);else if(state.page==='products')productsPage(root);else if(state.page==='purchase')purchasePage(root);else if(state.page==='sale')salePage(root);else if(state.page==='parties')partiesPage(root);else if(state.page==='money')moneyPage(root);else if(state.page==='stock')await stockPage(root);else if(state.page==='history')await historyPage(root);}catch(e){root.innerHTML=`<div class="card"><b>লোড করা যায়নি</b><p>${esc(e.message)}</p><button class="primary" onclick="render()">আবার চেষ্টা করুন</button></div>`}}
-async function dashboard(root){const d=await api('/api/dashboard');const x=d.summary;root.innerHTML=header('ড্যাশবোর্ড','দোকানের বর্তমান হিসাবের সংক্ষিপ্ত চিত্র')+`<div class="grid">${metric('মোট নগদ/ব্যাংক',money(x.cash_paisa))}${metric('আজকের বিক্রয়',money(x.today_sales_paisa))}${metric('আজকের ক্রয়',money(x.today_purchases_paisa))}${metric('আজকের খরচ',money(x.today_expenses_paisa))}${metric('ক্রেতার বাকি',money(x.customer_due_paisa))}${metric('স্টকের আনুমানিক ক্রয়মূল্য',money(x.stock_value_paisa))}${metric('মোট পণ্য',x.product_count)}${metric('ক্রেতা',x.customer_count)}</div><div class="section card"><h2>কম স্টকের পণ্য</h2>${d.low_stock.length?table(['পণ্য','বর্তমান স্টক','সর্বনিম্ন স্টক'],d.low_stock.map(p=>[esc(p.name),qty(p.current_stock_milli)+' '+esc(p.unit),qty(p.minimum_stock_milli)+' '+esc(p.unit)])):'<div class="empty">কম স্টকের পণ্য নেই।</div>'}</div><div class="section card"><b>মনে রাখবে</b><p class="muted">মোট বিক্রয়ের এন্ট্রি স্টকের পরিমাণ কমায় না। স্টক কমাতে পণ্যভিত্তিক বিক্রয় ব্যবহার করো।</p></div>`}
-function renderLogin(root,session){root.innerHTML=header('নিরাপদ লগইন','CHAMAK STORE-এ প্রবেশ করতে পাসওয়ার্ড দিন')+`<form id="loginForm" class="card" style="max-width:440px;margin:25px auto"><h2>লগইন</h2>${session.configured?'':'<p class="muted">প্রথমে Cloudflare Worker Secrets-এ APP_PASSWORD ও SESSION_SECRET সেট করুন। সেট না করা পর্যন্ত লগইন করা যাবে না।</p>'}<div class="field"><label for="loginPassword">পাসওয়ার্ড</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" required></div><div class="actions"><button class="primary" ${session.configured?'':'disabled'}>লগইন</button></div></form>`;$('#loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({password:new FormData(e.currentTarget).get('password')})});toast('লগইন সফল।');render()}catch(err){toast(err.message)}}}
-function metric(label,value){return `<div class="card"><div class="metric-label">${label}</div><div class="metric">${value}</div></div>`}
-function table(head,rows){return `<div class="tablewrap"><table><thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${head.length}" class="empty">কোনো তথ্য নেই</td></tr>`}</tbody></table></div>`}
-function productsPage(root){root.innerHTML=header('পণ্য ব্যবস্থাপনা','পণ্য যোগ করো; ব্যবহৃত পণ্য সরাসরি মুছে ফেলা হবে না')+`<form id="productForm" class="card"><h2>নতুন পণ্য</h2><div class="formgrid">${field('পণ্যের নাম','name')}${field('SKU / কোড (ঐচ্ছিক)','sku')}${field('একক','unit','text','টি')}${field('ক্রয়মূল্য (টাকা)','purchase_price','number','0')}${field('বিক্রয়মূল্য (টাকা)','sale_price','number','0')}${field('সর্বনিম্ন স্টক','minimum_stock','number','0')}${field('প্রারম্ভিক স্টক','opening_stock','number','0')}</div><div class="actions"><button class="primary">পণ্য সংরক্ষণ</button></div></form><div class="section"><h2>পণ্যের তালিকা (${state.products.length})</h2>${table(['কোড','পণ্যের নাম','স্টক','ক্রয়মূল্য','বিক্রয়মূল্য','অবস্থা'],state.products.map(p=>[esc(p.sku),esc(p.name),qty(p.current_stock_milli)+' '+esc(p.unit),money(p.purchase_price_paisa),money(p.sale_price_paisa),Number(p.current_stock_milli)<=Number(p.minimum_stock_milli)?'<span class="status warning">কম স্টক</span>':'<span class="status">ঠিক আছে</span>']))}</div>`;$('#productForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{await post('/api/products',Object.fromEntries(f));toast('পণ্য সংরক্ষিত হয়েছে।');render()}catch(err){toast(err.message)}}}
-function accountSelect(){return `<option value="1">নগদ</option>`+state.accounts.filter(a=>a.id!==1).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}
-function lineRows(){return `<div id="lineItems"></div><button class="secondary" type="button" id="addLine">+ পণ্য যোগ</button><div class="totalbar"><span>মোট</span><span id="lineTotal">৳০.০০</span></div>`}
-function addLine(){const wrap=$('#lineItems');const div=document.createElement('div');div.className='lineitem';div.innerHTML=`<div class="field"><label>পণ্য</label><select class="li-product">${productOptions()}</select></div><div class="field"><label>পরিমাণ</label><input class="li-qty" type="number" step="0.001" min="0.001" value="1"></div><div class="field"><label>একক মূল্য (টাকা)</label><input class="li-price" type="number" min="0" step="0.01" value="0"></div><button class="danger" type="button">বাদ</button>`;wrap.append(div);$('.li-product',div).onchange=e=>{const opt=e.target.selectedOptions[0];$('.li-price',div).value=opt?.dataset.price||0;updateTotal()};$('.li-qty',div).oninput=updateTotal;$('.li-price',div).oninput=updateTotal;$('button',div).onclick=()=>{div.remove();updateTotal()};updateTotal()}
-function updateTotal(){let total=0;$$('.lineitem').forEach(el=>{total+=Math.round(Number($('.li-qty',el).value||0)*1000)*Math.round(Number($('.li-price',el).value||0)*100)/1000});$('#lineTotal').textContent=money(Math.round(total*100))}
-function getLineData(cost=false){return $$('.lineitem').map(el=>({product_id:Number($('.li-product',el).value),quantity:Number($('.li-qty',el).value),unit_price:Number($('.li-price',el).value),unit_cost:Number($('.li-price',el).value)}))}
-function wireLines(){ $('#addLine').onclick=addLine;addLine(); }
-function purchasePage(root){root.innerHTML=header('পণ্য ক্রয়','ক্রয় করলে স্টক বাড়বে, পরিশোধে নগদ কমবে এবং বাকি থাকলে দেনা বাড়বে')+`<form id="purchaseForm" class="card"><div class="formgrid">${field('তারিখ','transaction_date','date',today())}${field('সরবরাহকারী','supplier_id','select','','<option value="">সরবরাহকারী (ঐচ্ছিক)</option>'+state.suppliers.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join(''))}${field('কোন হিসাব থেকে টাকা যাবে','account_id','select','',''+accountSelect())}${field('পরিশোধ (টাকা)','paid_amount','number','0')}</div><div class="section"><h2>ক্রয়কৃত পণ্য</h2>${lineRows()}</div><div class="field section"><label>নোট</label><textarea name="note"></textarea></div><div class="actions"><button class="primary">ক্রয় সংরক্ষণ</button></div></form>`;wireLines();$('#purchaseForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{const data=Object.fromEntries(f);data.items=getLineData(true);await post('/api/transactions/purchase',data);toast('ক্রয় সংরক্ষিত হয়েছে।');render()}catch(err){toast(err.message)}}}
-function salePage(root){root.innerHTML=header('বিক্রয়','পণ্যভিত্তিক বিক্রয় স্টক কমায়। মোট বিক্রয় আলাদা অপশন।')+`<div class="grid"><div class="card"><h2>পণ্যভিত্তিক বিক্রয়</h2><form id="saleForm"><div class="formgrid">${field('তারিখ','transaction_date','date',today())}${field('ক্রেতা','customer_id','select','',''+partyOptions(state.customers,'ক্রেতা'))}${field('টাকা জমা হবে','account_id','select','',''+accountSelect())}${field('আদায় (টাকা)','paid_amount','number','0')}</div><div class="section"><h2>পণ্য</h2>${lineRows()}</div><div class="field section"><label>নোট</label><textarea name="note"></textarea></div><div class="actions"><button class="primary">বিক্রয় সংরক্ষণ</button></div></form></div><div class="card"><h2>মোট বিক্রয় (পণ্যভিত্তিক নয়)</h2><p class="muted">এতে বিক্রয়ের টাকা, আদায় ও বাকি রেকর্ড হবে। স্টক কমবে না এবং প্রকৃত লাভ হিসাব করা হবে না।</p><form id="totalSaleForm"><div class="formgrid">${field('তারিখ','transaction_date','date',today())}${field('ক্রেতা','customer_id','select','',''+partyOptions(state.customers,'ক্রেতা'))}${field('টাকা জমা হবে','account_id','select','',''+accountSelect())}${field('মোট বিক্রয় (টাকা)','total_amount','number','0')}${field('আদায় (টাকা)','paid_amount','number','0')}</div><div class="field section"><label>নোট</label><textarea name="note"></textarea></div><div class="actions"><button class="primary">মোট বিক্রয় সংরক্ষণ</button></div></form></div></div>`;const forms=$$('#saleForm,#totalSaleForm');wireLines();forms[0].onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{const d=Object.fromEntries(f);d.items=getLineData();await post('/api/transactions/sale',d);toast('বিক্রয় সংরক্ষিত হয়েছে।');render()}catch(err){toast(err.message)}};forms[1].onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{await post('/api/transactions/total-sale',Object.fromEntries(f));toast('মোট বিক্রয় সংরক্ষিত হয়েছে।');render()}catch(err){toast(err.message)}}}
-function partiesPage(root){root.innerHTML=header('ক্রেতা ও সরবরাহকারী','প্রারম্ভিক বাকি/দেনা যোগ করা যাবে')+`<div class="grid"><form id="customerForm" class="card"><h2>নতুন ক্রেতা</h2><div class="formgrid">${field('নাম','name')}${field('মোবাইল','phone')}${field('প্রারম্ভিক বাকি (টাকা)','opening_due','number','0')}</div><div class="actions"><button class="primary">ক্রেতা সংরক্ষণ</button></div></form><form id="supplierForm" class="card"><h2>নতুন সরবরাহকারী</h2><div class="formgrid">${field('নাম','name')}${field('মোবাইল','phone')}${field('প্রারম্ভিক দেনা (টাকা)','opening_due','number','0')}</div><div class="actions"><button class="primary">সরবরাহকারী সংরক্ষণ</button></div></form></div><div class="section card"><h2>ক্রেতার তালিকা</h2>${table(['নাম','মোবাইল','বর্তমান বাকি'],state.customers.map(x=>[esc(x.name),esc(x.phone||'—'),money(x.current_due_paisa)]))}</div><div class="section card"><h2>সরবরাহকারীর তালিকা</h2>${table(['নাম','মোবাইল','বর্তমান দেনা'],state.suppliers.map(x=>[esc(x.name),esc(x.phone||'—'),money(x.current_due_paisa)]))}</div>`;for(const [id,path] of [['customerForm','/api/customers'],['supplierForm','/api/suppliers']])$('#'+id).onsubmit=async e=>{e.preventDefault();try{await post(path,Object.fromEntries(new FormData(e.currentTarget)));toast('তথ্য সংরক্ষিত হয়েছে।');render()}catch(err){toast(err.message)}}}
-function moneyPage(root){root.innerHTML=header('নগদ, বাকি আদায় ও খরচ','লেনদেনের ধরন অনুযায়ী নগদ/ব্যাংক আপডেট হবে')+`<div class="grid"><form id="openingForm" class="card"><h2>প্রারম্ভিক নগদ/ব্যাংক</h2><p class="muted">শুরুতে দোকানে থাকা নগদ/ব্যাংকের টাকা দিন। পরে পরিবর্তন করলে শুধু পার্থক্য ব্যালেন্সে যোগ/বিয়োগ হবে।</p><div class="formgrid">${field('হিসাব','id','select','',''+state.accounts.map(a=>`<option value="${a.id}">${esc(a.name)} — বর্তমান ${money(a.current_balance_paisa)}</option>`).join(''))}${field('প্রারম্ভিক ব্যালেন্স (টাকা)','opening_balance','number','0')}</div><div class="actions"><button class="primary">ব্যালেন্স সংরক্ষণ</button></div></form><form id="collectionForm" class="card"><h2>ক্রেতার বাকি আদায়</h2><div class="formgrid">${field('ক্রেতা','customer_id','select','',''+partyOptions(state.customers,'ক্রেতা নির্বাচন'))}${field('কোন হিসাবে জমা','account_id','select','',''+accountSelect())}${field('আদায়ের টাকা','amount','number','0')}${field('তারিখ','transaction_date','date',today())}</div><div class="actions"><button class="primary">আদায় সংরক্ষণ</button></div></form><form id="supplierPayForm" class="card"><h2>সরবরাহকারীকে পরিশোধ</h2><div class="formgrid">${field('সরবরাহকারী','supplier_id','select','',''+partyOptions(state.suppliers,'সরবরাহকারী নির্বাচন'))}${field('কোন হিসাব থেকে','account_id','select','',''+accountSelect())}${field('পরিশোধের টাকা','amount','number','0')}${field('তারিখ','transaction_date','date',today())}</div><div class="actions"><button class="primary">পরিশোধ সংরক্ষণ</button></div></form><form id="expenseForm" class="card"><h2>খরচ</h2><div class="formgrid">${field('খরচের খাত','category','text','অন্যান্য')}${field('টাকার পরিমাণ','amount','number','0')}${field('কোন হিসাব থেকে','account_id','select','',''+accountSelect())}${field('তারিখ','transaction_date','date',today())}</div><div class="actions"><button class="primary">খরচ সংরক্ষণ</button></div></form><form id="incomeForm" class="card"><h2>অন্যান্য আয়</h2><div class="formgrid">${field('আয়ের বিবরণ','note')}${field('টাকার পরিমাণ','amount','number','0')}${field('কোন হিসাবে জমা','account_id','select','',''+accountSelect())}${field('তারিখ','transaction_date','date',today())}</div><div class="actions"><button class="primary">আয় সংরক্ষণ</button></div></form></div>`;$('#openingForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/accounts',{method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(e.currentTarget)))});toast('প্রারম্ভিক ব্যালেন্স সংরক্ষিত হয়েছে।');render()}catch(err){toast(err.message)}};for(const [id,path] of [['collectionForm','/api/transactions/customer-collection'],['supplierPayForm','/api/transactions/supplier-payment'],['expenseForm','/api/transactions/expense'],['incomeForm','/api/transactions/other-income']])$('#'+id).onsubmit=async e=>{e.preventDefault();try{await post(path,Object.fromEntries(new FormData(e.currentTarget)));toast('লেনদেন সংরক্ষিত হয়েছে।');render()}catch(err){toast(err.message)}}}
-async function stockPage(root){const d=await api('/api/stock-verification');state.stock=d.items;root.innerHTML=header('স্টক ভেলু যাচাই','বর্তমান স্টক × গড় ক্রয়মূল্য = প্রত্যাশিত স্টক মূল্য')+`<div class="card"><p class="muted">এখানে প্রকৃত পরিমাণ লিখে মিল পরীক্ষা করা যায়। এই সংস্করণে পার্থক্য থাকলে স্বয়ংক্রিয়ভাবে স্টক পরিবর্তন করা হবে না।</p>${table(['পণ্য','সিস্টেম স্টক','গড় ক্রয়মূল্য','প্রত্যাশিত স্টক মূল্য','প্রকৃত পরিমাণ দিয়ে যাচাই'],state.stock.map(p=>[esc(p.name),qty(p.current_stock_milli)+' '+esc(p.unit),money(p.avg_cost_paisa),money(p.expected_value_paisa),`<form class="verifyForm" data-id="${p.id}"><input aria-label="প্রকৃত পরিমাণ" name="physical_quantity" type="number" step="0.001" min="0" value="${Number(p.current_stock_milli)/1000}" style="width:110px"><button class="secondary">মিলাও</button></form>`]))}</div>`;$$('.verifyForm').forEach(f=>f.onsubmit=async e=>{e.preventDefault();try{const r=await post('/api/stock-verification',{product_id:Number(f.dataset.id),physical_quantity:Number(new FormData(f).get('physical_quantity'))});toast(r.message||'মিল পাওয়া গেছে।')}catch(err){toast(err.message)}})}
-async function historyPage(root){const t=await api('/api/transactions?limit=100');state.tx=t.items;root.innerHTML=header('লেনদেনের ইতিহাস','সর্বশেষ ১০০টি লেনদেন')+`<div class="actions"><a class="primary" href="/api/backup" style="text-decoration:none">ব্যাকআপ JSON ডাউনলোড</a><button id="auditBtn" class="secondary">অডিট লগ দেখাও</button></div><div class="section">${table(['নম্বর','তারিখ','ধরন','মোট','পরিশোধ/আদায়','বাকি','নোট'],state.tx.map(x=>[esc(x.transaction_no),esc(x.transaction_date),esc(typeBn(x.type)),money(x.total_paisa),money(x.paid_paisa),money(x.due_paisa),esc(x.note||'')]))}</div><div id="auditArea"></div>`;$('#auditBtn').onclick=async()=>{try{const a=await api('/api/audit-log');$('#auditArea').innerHTML='<div class="section card"><h2>অডিট লগ</h2>'+table(['সময়','কাজ','ধরন','বিবরণ'],a.items.map(x=>[esc(x.created_at),esc(x.action),esc(x.entity_type),esc(x.details||'')]))+'</div>'}catch(e){toast(e.message)}}}
-function typeBn(t){return ({purchase:'ক্রয়',sale:'পণ্যভিত্তিক বিক্রয়',total_sale:'মোট বিক্রয়',customer_collection:'বাকি আদায়',supplier_payment:'সরবরাহকারীকে পরিশোধ',expense:'খরচ',other_income:'অন্যান্য আয়',cash_in:'নগদ জমা',cash_out:'নগদ উত্তোলন',stock_adjustment:'স্টক সমন্বয়'})[t]||t}
-$('#tabs').addEventListener('click',e=>{const b=e.target.closest('button[data-page]');if(!b)return;state.page=b.dataset.page;$$('#tabs button').forEach(x=>x.classList.toggle('active',x===b));render()});$('#refreshBtn').onclick=render;$('#logoutBtn').onclick=async()=>{try{await api('/api/logout',{method:'POST',body:'{}'});render()}catch(e){toast(e.message)}};
+
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+
+const state = {
+  page: 'dashboard',
+  products: [],
+  customers: [],
+  suppliers: [],
+  accounts: [],
+  items: [],
+  stock: [],
+  tx: []
+};
+
+const money = n =>
+  new Intl.NumberFormat('bn-BD', {
+    style: 'currency',
+    currency: 'BDT',
+    maximumFractionDigits: 2
+  }).format((Number(n) || 0) / 100);
+
+const qty = n =>
+  (Number(n || 0) / 1000).toLocaleString('bn-BD', {
+    maximumFractionDigits: 3
+  });
+
+const esc = s =>
+  String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[c]));
+
+// সংশোধন ১: বাংলাদেশ সময় অনুযায়ী তারিখ
+const today = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Dhaka',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
+
+  const p = Object.fromEntries(
+    parts
+      .filter(x => x.type !== 'literal')
+      .map(x => [x.type, x.value])
+  );
+
+  return `${p.year}-${p.month}-${p.day}`;
+};
+
+function toast(msg) {
+  const el = $('#toast');
+  if (!el) {
+    alert(msg);
+    return;
+  }
+
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3200);
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      'content-type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+
+  let data;
+
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('সার্ভার থেকে সঠিক উত্তর আসেনি।');
+  }
+
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || 'কাজটি সম্পন্ন হয়নি।');
+  }
+
+  return data;
+}
+
+function post(path, data) {
+  return api(path, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...data,
+      idempotency_key: crypto.randomUUID()
+    })
+  });
+}
+
+function header(title, sub = '') {
+  return `
+    <div class="pagehead">
+      <div>
+        <h1>${title}</h1>
+        <div class="muted">${sub}</div>
+      </div>
+    </div>`;
+}
+
+function field(label, name, type = 'text', value = '', opts = '') {
+  return `
+    <div class="field">
+      <label for="${name}">${label}</label>
+      ${
+        type === 'select'
+          ? `<select id="${name}" name="${name}">${opts}</select>`
+          : `<input id="${name}" name="${name}" type="${type}"
+               value="${esc(value)}"
+               ${type === 'number' ? 'step="any"' : ''}>`
+      }
+    </div>`;
+}
+
+function productOptions() {
+  return `<option value="">পণ্য বাছাই করুন</option>` +
+    state.products.map(p => `
+      <option value="${p.id}"
+        data-price="${Number(p.sale_price_paisa) / 100}"
+        data-cost="${Number(p.purchase_price_paisa) / 100}"
+        data-stock="${Number(p.current_stock_milli) / 1000}">
+        ${esc(p.name)} — স্টক ${qty(p.current_stock_milli)}
+        ${esc(p.unit)}
+      </option>`
+    ).join('');
+}
+
+function partyOptions(list, label) {
+  return `<option value="">${label} (ঐচ্ছিক)</option>` +
+    list.map(x =>
+      `<option value="${x.id}">${esc(x.name)}</option>`
+    ).join('');
+}
+
+async function loadBase() {
+  const [p, c, s, a] = await Promise.all([
+    api('/api/products'),
+    api('/api/customers'),
+    api('/api/suppliers'),
+    api('/api/accounts')
+  ]);
+
+  state.products = p.items;
+  state.customers = c.items;
+  state.suppliers = s.items;
+  state.accounts = a.items;
+}
+
+async function render() {
+  const root = $('#pageContent');
+  root.innerHTML = '<div class="loading">তথ্য লোড হচ্ছে…</div>';
+
+  try {
+    const session = await api('/api/session');
+    $('#logoutBtn').hidden = !session.authenticated;
+
+    if (!session.authenticated) {
+      renderLogin(root, session);
+      return;
+    }
+
+    await loadBase();
+
+    if (state.page === 'dashboard') {
+      await dashboard(root);
+    } else if (state.page === 'products') {
+      productsPage(root);
+    } else if (state.page === 'purchase') {
+      purchasePage(root);
+    } else if (state.page === 'sale') {
+      salePage(root);
+    } else if (state.page === 'parties') {
+      partiesPage(root);
+    } else if (state.page === 'money') {
+      moneyPage(root);
+    } else if (state.page === 'stock') {
+      await stockPage(root);
+    } else if (state.page === 'history') {
+      await historyPage(root);
+    }
+  } catch (e) {
+    root.innerHTML = `
+      <div class="card">
+        <b>লোড করা যায়নি</b>
+        <p>${esc(e.message)}</p>
+        <button class="primary" id="retryRender">আবার চেষ্টা করুন</button>
+      </div>`;
+
+    $('#retryRender').onclick = render;
+  }
+}
+
+async function dashboard(root) {
+  const d = await api('/api/dashboard');
+  const x = d.summary;
+
+  root.innerHTML =
+    header('ড্যাশবোর্ড', 'দোকানের বর্তমান হিসাবের সংক্ষিপ্ত চিত্র') +
+    `<div class="grid">
+      ${metric('মোট নগদ/ব্যাংক', money(x.cash_paisa))}
+      ${metric('আজকের বিক্রয়', money(x.today_sales_paisa))}
+      ${metric('আজকের ক্রয়', money(x.today_purchases_paisa))}
+      ${metric('আজকের খরচ', money(x.today_expenses_paisa))}
+      ${metric('ক্রেতার বাকি', money(x.customer_due_paisa))}
+      ${metric('স্টকের আনুমানিক ক্রয়মূল্য', money(x.stock_value_paisa))}
+      ${metric('মোট পণ্য', x.product_count)}
+      ${metric('ক্রেতা', x.customer_count)}
+    </div>
+    <div class="section card">
+      <h2>কম স্টকের পণ্য</h2>
+      ${
+        d.low_stock.length
+          ? table(
+              ['পণ্য', 'বর্তমান স্টক', 'সর্বনিম্ন স্টক'],
+              d.low_stock.map(p => [
+                esc(p.name),
+                qty(p.current_stock_milli) + ' ' + esc(p.unit),
+                qty(p.minimum_stock_milli) + ' ' + esc(p.unit)
+              ])
+            )
+          : '<div class="empty">কম স্টকের পণ্য নেই।</div>'
+      }
+    </div>
+    <div class="section card">
+      <b>মনে রাখবে</b>
+      <p class="muted">
+        মোট বিক্রয়ের এন্ট্রি স্টকের পরিমাণ কমায় না।
+        স্টক কমাতে পণ্যভিত্তিক বিক্রয় ব্যবহার করো।
+      </p>
+    </div>`;
+}
+
+function renderLogin(root, session) {
+  root.innerHTML =
+    header('নিরাপদ লগইন', 'CHAMAK STORE-এ প্রবেশ করতে পাসওয়ার্ড দিন') +
+    `<form id="loginForm" class="card"
+       style="max-width:440px;margin:25px auto">
+      <h2>লগইন</h2>
+      ${
+        session.configured
+          ? ''
+          : `<p class="muted">
+               প্রথমে Cloudflare Worker Secrets-এ APP_PASSWORD ও
+               SESSION_SECRET সেট করুন। সেট না করা পর্যন্ত লগইন করা যাবে না।
+             </p>`
+      }
+      <div class="field">
+        <label for="loginPassword">পাসওয়ার্ড</label>
+        <input id="loginPassword" name="password" type="password"
+          autocomplete="current-password" required>
+      </div>
+      <div class="actions">
+        <button class="primary" ${session.configured ? '' : 'disabled'}>
+          লগইন
+        </button>
+      </div>
+    </form>`;
+
+  $('#loginForm').onsubmit = async e => {
+    e.preventDefault();
+
+    try {
+      await api('/api/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          password: new FormData(e.currentTarget).get('password')
+        })
+      });
+
+      toast('লগইন সফল।');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+
+function metric(label, value) {
+  return `
+    <div class="card">
+      <div class="metric-label">${label}</div>
+      <div class="metric">${value}</div>
+    </div>`;
+}
+
+function table(head, rows) {
+  return `
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>${head.map(h => `<th>${h}</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          ${
+            rows.length
+              ? rows.map(r =>
+                  `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`
+                ).join('')
+              : `<tr><td colspan="${head.length}" class="empty">
+                   কোনো তথ্য নেই
+                 </td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function productsPage(root) {
+  root.innerHTML =
+    header('পণ্য ব্যবস্থাপনা', 'পণ্য যোগ করো; ব্যবহৃত পণ্য সরাসরি মুছে ফেলা হবে না') +
+    `<form id="productForm" class="card">
+      <h2>নতুন পণ্য</h2>
+      <div class="formgrid">
+        ${field('পণ্যের নাম', 'name')}
+        ${field('SKU / কোড (ঐচ্ছিক)', 'sku')}
+        ${field('একক', 'unit', 'text', 'টি')}
+        ${field('ক্রয়মূল্য (টাকা)', 'purchase_price', 'number', '0')}
+        ${field('বিক্রয়মূল্য (টাকা)', 'sale_price', 'number', '0')}
+        ${field('সর্বনিম্ন স্টক', 'minimum_stock', 'number', '0')}
+        ${field('প্রারম্ভিক স্টক', 'opening_stock', 'number', '0')}
+      </div>
+      <div class="actions">
+        <button class="primary">পণ্য সংরক্ষণ</button>
+      </div>
+    </form>
+    <div class="section">
+      <h2>পণ্যের তালিকা (${state.products.length})</h2>
+      ${table(
+        ['কোড', 'পণ্যের নাম', 'স্টক', 'ক্রয়মূল্য', 'বিক্রয়মূল্য', 'অবস্থা'],
+        state.products.map(p => [
+          esc(p.sku),
+          esc(p.name),
+          qty(p.current_stock_milli) + ' ' + esc(p.unit),
+          money(p.purchase_price_paisa),
+          money(p.sale_price_paisa),
+          Number(p.current_stock_milli) <= Number(p.minimum_stock_milli)
+            ? '<span class="status warning">কম স্টক</span>'
+            : '<span class="status">ঠিক আছে</span>'
+        ])
+      )}
+    </div>`;
+
+  $('#productForm').onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+
+    try {
+      await post('/api/products', Object.fromEntries(f));
+      toast('পণ্য সংরক্ষিত হয়েছে।');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+
+function accountSelect() {
+  return `<option value="1">নগদ</option>` +
+    state.accounts
+      .filter(a => a.id !== 1)
+      .map(a => `<option value="${a.id}">${esc(a.name)}</option>`)
+      .join('');
+}
+
+function lineRows() {
+  return `
+    <div class="line-items-container">
+      <div id="lineItems"></div>
+      <button class="secondary" type="button" id="addLine">
+        + পণ্য যোগ
+      </button>
+      <div class="totalbar">
+        <span>মোট</span>
+        <span id="lineTotal">৳০.০০</span>
+      </div>
+    </div>`;
+}
+
+// সংশোধন ২ ও ৩:
+// ক্রয় ফর্মে ক্রয়মূল্য, বিক্রয় ফর্মে বিক্রয়মূল্য
+function addLine() {
+  const wrap = $('#lineItems');
+  if (!wrap) return;
+
+  const div = document.createElement('div');
+  div.className = 'lineitem';
+
+  div.innerHTML = `
+    <div class="field">
+      <label>পণ্য</label>
+      <select class="li-product">${productOptions()}</select>
+    </div>
+    <div class="field">
+      <label>পরিমাণ</label>
+      <input class="li-qty" type="number" step="0.001"
+        min="0.001" value="1">
+    </div>
+    <div class="field">
+      <label>একক মূল্য (টাকা)</label>
+      <input class="li-price" type="number" min="0"
+        step="0.01" value="0">
+    </div>
+    <button class="danger" type="button">বাদ</button>`;
+
+  wrap.append(div);
+
+  $('.li-product', div).onchange = e => {
+    const opt = e.target.selectedOptions[0];
+    const isPurchase = !!div.closest('#purchaseForm');
+
+    $('.li-price', div).value =
+      (isPurchase ? opt?.dataset.cost : opt?.dataset.price) || 0;
+
+    updateTotal();
+  };
+
+  $('.li-qty', div).oninput = updateTotal;
+  $('.li-price', div).oninput = updateTotal;
+
+  $('button', div).onclick = () => {
+    div.remove();
+    updateTotal();
+  };
+
+  updateTotal();
+}
+
+// সংশোধন: মোটকে পয়সায় হিসাব করে money() দিয়ে প্রদর্শন
+function updateTotal() {
+  let totalPaisa = 0;
+
+  $$('.lineitem').forEach(el => {
+    const quantityMilli = Math.round(
+      Number($('.li-qty', el).value || 0) * 1000
+    );
+
+    const unitPricePaisa = Math.round(
+      Number($('.li-price', el).value || 0) * 100
+    );
+
+    totalPaisa += Math.round(
+      quantityMilli * unitPricePaisa / 1000
+    );
+  });
+
+  const totalEl = $('#lineTotal');
+  if (totalEl) {
+    totalEl.textContent = money(totalPaisa);
+  }
+}
+
+function getLineData() {
+  return $$('.lineitem').map(el => {
+    const price = Number($('.li-price', el).value || 0);
+
+    return {
+      product_id: Number($('.li-product', el).value),
+      quantity: Number($('.li-qty', el).value),
+      unit_price: price,
+      unit_cost: price
+    };
+  });
+}
+
+function wireLines() {
+  const addButton = $('#addLine');
+  if (addButton) addButton.onclick = addLine;
+  addLine();
+}
+
+function purchasePage(root) {
+  root.innerHTML =
+    header('পণ্য ক্রয়', 'ক্রয় করলে স্টক বাড়বে, পরিশোধে নগদ কমবে এবং বাকি থাকলে দেনা বাড়বে') +
+    `<form id="purchaseForm" class="card">
+      <div class="formgrid">
+        ${field('তারিখ', 'transaction_date', 'date', today())}
+        ${field(
+          'সরবরাহকারী',
+          'supplier_id',
+          'select',
+          '',
+          '<option value="">সরবরাহকারী (ঐচ্ছিক)</option>' +
+          state.suppliers.map(s =>
+            `<option value="${s.id}">${esc(s.name)}</option>`
+          ).join('')
+        )}
+        ${field('কোন হিসাব থেকে টাকা যাবে', 'account_id', 'select', '', accountSelect())}
+        ${field('পরিশোধ (টাকা)', 'paid_amount', 'number', '0')}
+      </div>
+      <div class="section">
+        <h2>ক্রয়কৃত পণ্য</h2>
+        ${lineRows()}
+      </div>
+      <div class="field section">
+        <label>নোট</label>
+        <textarea name="note"></textarea>
+      </div>
+      <div class="actions">
+        <button class="primary">ক্রয় সংরক্ষণ</button>
+      </div>
+    </form>`;
+
+  wireLines();
+
+  $('#purchaseForm').onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+
+    try {
+      const data = Object.fromEntries(f);
+      data.items = getLineData();
+
+      await post('/api/transactions/purchase', data);
+      toast('ক্রয় সংরক্ষিত হয়েছে।');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+
+function salePage(root) {
+  root.innerHTML =
+    header('বিক্রয়', 'পণ্যভিত্তিক বিক্রয় স্টক কমায়। মোট বিক্রয় আলাদা অপশন।') +
+    `<div class="grid">
+      <div class="card">
+        <h2>পণ্যভিত্তিক বিক্রয়</h2>
+        <form id="saleForm">
+          <div class="formgrid">
+            ${field('তারিখ', 'transaction_date', 'date', today())}
+            ${field('ক্রেতা', 'customer_id', 'select', '', partyOptions(state.customers, 'ক্রেতা'))}
+            ${field('টাকা জমা হবে', 'account_id', 'select', '', accountSelect())}
+            ${field('আদায় (টাকা)', 'paid_amount', 'number', '0')}
+          </div>
+          <div class="section">
+            <h2>পণ্য</h2>
+            ${lineRows()}
+          </div>
+          <div class="field section">
+            <label>নোট</label>
+            <textarea name="note"></textarea>
+          </div>
+          <div class="actions">
+            <button class="primary">বিক্রয় সংরক্ষণ</button>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <h2>মোট বিক্রয় (পণ্যভিত্তিক নয়)</h2>
+        <p class="muted">
+          এতে বিক্রয়ের টাকা, আদায় ও বাকি রেকর্ড হবে।
+          এই সংস্করণে স্টক কমবে না এবং প্রকৃত লাভ হিসাব করা হবে না।
+        </p>
+        <form id="totalSaleForm">
+          <div class="formgrid">
+            ${field('তারিখ', 'transaction_date', 'date', today())}
+            ${field('ক্রেতা', 'customer_id', 'select', '', partyOptions(state.customers, 'ক্রেতা'))}
+            ${field('টাকা জমা হবে', 'account_id', 'select', '', accountSelect())}
+            ${field('মোট বিক্রয় (টাকা)', 'total_amount', 'number', '0')}
+            ${field('আদায় (টাকা)', 'paid_amount', 'number', '0')}
+          </div>
+          <div class="field section">
+            <label>নোট</label>
+            <textarea name="note"></textarea>
+          </div>
+          <div class="actions">
+            <button class="primary">মোট বিক্রয় সংরক্ষণ</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
+  const forms = $$('#saleForm, #totalSaleForm');
+  wireLines();
+
+  forms[0].onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+
+    try {
+      const d = Object.fromEntries(f);
+      d.items = getLineData();
+
+      await post('/api/transactions/sale', d);
+      toast('বিক্রয় সংরক্ষিত হয়েছে।');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+
+  forms[1].onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+
+    try {
+      await post('/api/transactions/total-sale', Object.fromEntries(f));
+      toast('মোট বিক্রয় সংরক্ষিত হয়েছে।');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+}
+
+function partiesPage(root) {
+  root.innerHTML =
+    header('ক্রেতা ও সরবরাহকারী', 'প্রারম্ভিক বাকি/দেনা যোগ করা যাবে') +
+    `<div class="grid">
+      <form id="customerForm" class="card">
+        <h2>নতুন ক্রেতা</h2>
+        <div class="formgrid">
+          ${field('নাম', 'name')}
+          ${field('মোবাইল', 'phone')}
+          ${field('প্রারম্ভিক বাকি (টাকা)', 'opening_due', 'number', '0')}
+        </div>
+        <div class="actions">
+          <button class="primary">ক্রেতা সংরক্ষণ</button>
+        </div>
+      </form>
+      <form id="supplierForm" class="card">
+        <h2>নতুন সরবরাহকারী</h2>
+        <div class="formgrid">
+          ${field('নাম', 'name')}
+          ${field('মোবাইল', 'phone')}
+          ${field('প্রারম্ভিক দেনা (টাকা)', 'opening_due', 'number', '0')}
+        </div>
+        <div class="actions">
+          <button class="primary">সরবরাহকারী সংরক্ষণ</button>
+        </div>
+      </form>
+    </div>
+    <div class="section card">
+      <h2>ক্রেতার তালিকা</h2>
+      ${table(
+        ['নাম', 'মোবাইল', 'বর্তমান বাকি'],
+        state.customers.map(x => [
+          esc(x.name),
+          esc(x.phone || '—'),
+          money(x.current_due_paisa)
+        ])
+      )}
+    </div>
+    <div class="section card">
+      <h2>সরবরাহকারীর তালিকা</h2>
+      ${table(
+        ['নাম', 'মোবাইল', 'বর্তমান দেনা'],
+        state.suppliers.map(x => [
+          esc(x.name),
+          esc(x.phone || '—'),
+          money(x.current_due_paisa)
+        ])
+      )}
+    </div>`;
+
+  for (const [id, path] of [
+    ['customerForm', '/api/customers'],
+    ['supplierForm', '/api/suppliers']
+  ]) {
+    $('#' + id).onsubmit = async e => {
+      e.preventDefault();
+
+      try {
+        await post(path, Object.fromEntries(new FormData(e.currentTarget)));
+        toast('তথ্য সংরক্ষিত হয়েছে।');
+        render();
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+}
+
+function moneyPage(root) {
+  root.innerHTML =
+    header('নগদ, বাকি আদায় ও খরচ', 'লেনদেনের ধরন অনুযায়ী নগদ/ব্যাংক আপডেট হবে') +
+    `<div class="grid">
+      <form id="openingForm" class="card">
+        <h2>প্রারম্ভিক নগদ/ব্যাংক</h2>
+        <p class="muted">
+          শুরুতে দোকানে থাকা নগদ/ব্যাংকের টাকা দিন।
+          পরে পরিবর্তন করলে শুধু পার্থক্য ব্যালেন্সে যোগ/বিয়োগ হবে।
+        </p>
+        <div class="formgrid">
+          ${field(
+            'হিসাব',
+            'id',
+            'select',
+            '',
+            state.accounts.map(a =>
+              `<option value="${a.id}"
+                 data-opening="${Number(a.opening_balance_paisa) / 100}">
+                 ${esc(a.name)} — বর্তমান ${money(a.current_balance_paisa)}
+               </option>`
+            ).join('')
+          )}
+          ${field(
+            'প্রারম্ভিক ব্যালেন্স (টাকা)',
+            'opening_balance',
+            'number',
+            state.accounts[0]
+              ? Number(state.accounts[0].opening_balance_paisa) / 100
+              : 0
+          )}
+        </div>
+        <div class="actions">
+          <button class="primary">ব্যালেন্স সংরক্ষণ</button>
+        </div>
+      </form>
+
+      <form id="collectionForm" class="card">
+        <h2>ক্রেতার বাকি আদায়</h2>
+        <div class="formgrid">
+          ${field('ক্রেতা', 'customer_id', 'select', '', partyOptions(state.customers, 'ক্রেতা নির্বাচন'))}
+          ${field('কোন হিসাবে জমা', 'account_id', 'select', '', accountSelect())}
+          ${field('আদায়ের টাকা', 'amount', 'number', '0')}
+          ${field('তারিখ', 'transaction_date', 'date', today())}
+        </div>
+        <div class="actions"><button class="primary">আদায় সংরক্ষণ</button></div>
+      </form>
+
+      <form id="supplierPayForm" class="card">
+        <h2>সরবরাহকারীকে পরিশোধ</h2>
+        <div class="formgrid">
+          ${field('সরবরাহকারী', 'supplier_id', 'select', '', partyOptions(state.suppliers, 'সরবরাহকারী নির্বাচন'))}
+          ${field('কোন হিসাব থেকে', 'account_id', 'select', '', accountSelect())}
+          ${field('পরিশোধের টাকা', 'amount', 'number', '0')}
+          ${field('তারিখ', 'transaction_date', 'date', today())}
+        </div>
+        <div class="actions"><button class="primary">পরিশোধ সংরক্ষণ</button></div>
+      </form>
+
+      <form id="expenseForm" class="card">
+        <h2>খরচ</h2>
+        <div class="formgrid">
+          ${field('খরচের খাত', 'category', 'text', 'অন্যান্য')}
+          ${field('টাকার পরিমাণ', 'amount', 'number', '0')}
+          ${field('কোন হিসাব থেকে', 'account_id', 'select', '', accountSelect())}
+          ${field('তারিখ', 'transaction_date', 'date', today())}
+        </div>
+        <div class="actions"><button class="primary">খরচ সংরক্ষণ</button></div>
+      </form>
+
+      <form id="incomeForm" class="card">
+        <h2>অন্যান্য আয়</h2>
+        <div class="formgrid">
+          ${field('আয়ের বিবরণ', 'note')}
+          ${field('টাকার পরিমাণ', 'amount', 'number', '0')}
+          ${field('কোন হিসাবে জমা', 'account_id', 'select', '', accountSelect())}
+          ${field('তারিখ', 'transaction_date', 'date', today())}
+        </div>
+        <div class="actions"><button class="primary">আয় সংরক্ষণ</button></div>
+      </form>
+    </div>`;
+
+  // হিসাব পাল্টালে সেই হিসাবের বিদ্যমান opening balance দেখাও
+  $('#id').onchange = () => {
+    const opt = $('#id').selectedOptions[0];
+    $('#opening_balance').value = opt?.dataset.opening ?? 0;
+  };
+
+  $('#openingForm').onsubmit = async e => {
+    e.preventDefault();
+
+    try {
+      await api('/api/accounts', {
+        method: 'PATCH',
+        body: JSON.stringify(Object.fromEntries(new FormData(e.currentTarget)))
+      });
+
+      toast('প্রারম্ভিক ব্যালেন্স সংরক্ষিত হয়েছে।');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+
+  for (const [id, path] of [
+    ['collectionForm', '/api/transactions/customer-collection'],
+    ['supplierPayForm', '/api/transactions/supplier-payment'],
+    ['expenseForm', '/api/transactions/expense'],
+    ['incomeForm', '/api/transactions/other-income']
+  ]) {
+    $('#' + id).onsubmit = async e => {
+      e.preventDefault();
+
+      try {
+        await post(path, Object.fromEntries(new FormData(e.currentTarget)));
+        toast('লেনদেন সংরক্ষিত হয়েছে।');
+        render();
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  }
+}
+
+async function stockPage(root) {
+  const d = await api('/api/stock-verification');
+  state.stock = d.items;
+
+  root.innerHTML =
+    header('স্টক ভেলু যাচাই', 'বর্তমান স্টক × গড় ক্রয়মূল্য = প্রত্যাশিত স্টক মূল্য') +
+    `<div class="card">
+      <p class="muted">
+        এখানে প্রকৃত পরিমাণ লিখে মিল পরীক্ষা করা যায়।
+        এই সংস্করণে পার্থক্য থাকলে স্বয়ংক্রিয়ভাবে স্টক পরিবর্তন করা হবে না।
+      </p>
+      ${table(
+        ['পণ্য', 'সিস্টেম স্টক', 'গড় ক্রয়মূল্য', 'প্রত্যাশিত স্টক মূল্য', 'প্রকৃত পরিমাণ দিয়ে যাচাই'],
+        state.stock.map(p => [
+          esc(p.name),
+          qty(p.current_stock_milli) + ' ' + esc(p.unit),
+          money(p.avg_cost_paisa),
+          money(p.expected_value_paisa),
+          `<form class="verifyForm" data-id="${p.id}">
+             <input aria-label="প্রকৃত পরিমাণ" name="physical_quantity"
+               type="number" step="0.001" min="0"
+               value="${Number(p.current_stock_milli) / 1000}"
+               style="width:110px">
+             <button class="secondary">মিলাও</button>
+           </form>`
+        ])
+      )}
+    </div>`;
+
+  $$('.verifyForm').forEach(f => {
+    f.onsubmit = async e => {
+      e.preventDefault();
+
+      try {
+        const r = await post('/api/stock-verification', {
+          product_id: Number(f.dataset.id),
+          physical_quantity: Number(
+            new FormData(f).get('physical_quantity')
+          )
+        });
+
+        toast(r.message || 'মিল পাওয়া গেছে।');
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  });
+}
+
+async function historyPage(root) {
+  const t = await api('/api/transactions?limit=100');
+  state.tx = t.items;
+
+  root.innerHTML =
+    header('লেনদেনের ইতিহাস', 'সর্বশেষ ১০০টি লেনদেন') +
+    `<div class="actions">
+      <a class="primary" href="/api/backup" style="text-decoration:none">
+        ব্যাকআপ JSON ডাউনলোড
+      </a>
+      <button id="auditBtn" class="secondary">অডিট লগ দেখাও</button>
+    </div>
+    <div class="section">
+      ${table(
+        ['নম্বর', 'তারিখ', 'ধরন', 'মোট', 'পরিশোধ/আদায়', 'বাকি', 'নোট'],
+        state.tx.map(x => [
+          esc(x.transaction_no),
+          esc(x.transaction_date),
+          esc(typeBn(x.type)),
+          money(x.total_paisa),
+          money(x.paid_paisa),
+          money(x.due_paisa),
+          esc(x.note || '')
+        ])
+      )}
+    </div>
+    <div id="auditArea"></div>`;
+
+  $('#auditBtn').onclick = async () => {
+    try {
+      const a = await api('/api/audit-log');
+
+      $('#auditArea').innerHTML =
+        '<div class="section card"><h2>অডিট লগ</h2>' +
+        table(
+          ['সময়', 'কাজ', 'ধরন', 'বিবরণ'],
+          a.items.map(x => [
+            esc(x.created_at),
+            esc(x.action),
+            esc(x.entity_type),
+            esc(x.details || '')
+          ])
+        ) +
+        '</div>';
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+}
+
+function typeBn(t) {
+  return ({
+    purchase: 'ক্রয়',
+    sale: 'পণ্যভিত্তিক বিক্রয়',
+    total_sale: 'মোট বিক্রয়',
+    customer_collection: 'বাকি আদায়',
+    supplier_payment: 'সরবরাহকারীকে পরিশোধ',
+    expense: 'খরচ',
+    other_income: 'অন্যান্য আয়',
+    cash_in: 'নগদ জমা',
+    cash_out: 'নগদ উত্তোলন',
+    stock_adjustment: 'স্টক সমন্বয়'
+  })[t] || t;
+}
+
+$('#tabs').addEventListener('click', e => {
+  const b = e.target.closest('button[data-page]');
+  if (!b) return;
+
+  state.page = b.dataset.page;
+
+  $$('#tabs button').forEach(x =>
+    x.classList.toggle('active', x === b)
+  );
+
+  render();
+});
+
+$('#refreshBtn').onclick = render;
+
+$('#logoutBtn').onclick = async () => {
+  try {
+    await api('/api/logout', {
+      method: 'POST',
+      body: '{}'
+    });
+
+    render();
+  } catch (e) {
+    toast(e.message);
+  }
+};
+
 render();
